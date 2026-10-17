@@ -20,7 +20,6 @@ local mod = EPGP:NewModule("log", "AceComm-3.0")
 local L = LibStub:GetLibrary("AceLocale-3.0"):GetLocale("EPGP")
 local GS = LibStub("LibGuildStorage-1.0")
 local JSON = LibStub("LibJSON-1.0")
-local deformat = AceLibrary("Deformat-2.0")
 
 local CallbackHandler = LibStub("CallbackHandler-1.0")
 if not mod.callbacks then
@@ -39,6 +38,38 @@ end
 
 local LOG_FORMAT = "LOG:%d\31%s\31%s\31%s\31%d"
 local LOG_FORMAT_NEW = "LOG:%d\31%s\31%s\31%s\31%d\31%s"
+
+local function ParseLogMessage(msg)
+    local body = string.match(msg, "^LOG:(.*)$")
+    if not body then
+        return
+    end
+
+    local parts = { strsplit("\31", body) }
+    local count = #parts
+    local timestamp, amount = tonumber(parts[1]), tonumber(parts[5])
+    if not timestamp or not amount then
+        return
+    end
+
+    if count == 7 then
+        return { timestamp, parts[2], parts[3], parts[4], amount, parts[7], tonumber(parts[6]) }
+    elseif count == 6 or count == 5 then
+        return { timestamp, parts[2], parts[3], parts[4], amount, parts[6] }
+    end
+end
+
+local function NormalizeRecord(record)
+    if type(record[2]) ~= "string" then
+        return
+    end
+
+    local kind, name = string.match(record[2], "^(.-)\31(.*)$")
+    local delta = tonumber(record[4])
+    if kind and delta then
+        record[2], record[3], record[4], record[5], record[7] = kind, name, record[3], delta, record[5]
+    end
+end
 
 local function log(...)
     -- print("EPGP_SYNC", ...)
@@ -66,14 +97,9 @@ end
 
 function mod:LogSync(prefix, msg, distribution, sender)
     if prefix == "EPGP" and sender ~= UnitName("player") then
-        local timestamp, kind, name, reason, amount, officer = deformat(msg, LOG_FORMAT_NEW)
-        if not timestamp then
-            timestamp, kind, name, reason, amount = deformat(msg, LOG_FORMAT)
-            officer = sender
-        end
-
-        if timestamp then
-            local entry = { tonumber(timestamp), kind, name, reason, tonumber(amount), officer }
+        local entry = ParseLogMessage(msg)
+        if entry then
+            entry[6] = entry[6] or sender
             table.insert(mod.db.profile.log, entry)
             if CheckFilter(entry, mod.db.profile.filter) then
                 table.insert(mod.db.profile.filtred_logs, entry)
@@ -84,20 +110,29 @@ function mod:LogSync(prefix, msg, distribution, sender)
     end
 end
 
+local function WithChange(text, record)
+    local amount, after = record[5], record[7]
+    if type(amount) == "number" and type(after) == "number" then
+        return string.format("%s [%d -> %d]", text, after - amount, after)
+    end
+    return text
+end
+
 local function LogRecordToString(record)
     local timestamp, kind, name, reason, amount, officer = unpack(record)
 
     if kind == "EP" then
-        return string.format(L["%s: %+d EP (%s) to %s from $s"],
-            date("%Y-%m-%d %H:%M", timestamp), amount, reason, name, officer)
+        return WithChange(string.format(L["%s: %+d EP (%s) to %s from %s"],
+            date("%Y-%m-%d %H:%M", timestamp), amount, reason, name, officer), record)
     elseif kind == "GP" then
-        return string.format(L["%s: %+d GP (%s) to %s from $s"],
-            date("%Y-%m-%d %H:%M", timestamp), amount, reason, name, officer)
+        return WithChange(string.format(L["%s: %+d GP (%s) to %s from %s"],
+            date("%Y-%m-%d %H:%M", timestamp), amount, reason, name, officer), record)
     elseif kind == "BI" then
-        return string.format(L["%s: %s to %s from $s"],
+        return string.format(L["%s: %s to %s from %s"],
             date("%Y-%m-%d %H:%M", timestamp), reason, name, officer)
     else
-        assert(false, "Unknown record in the log")
+        return string.format("%s: [%s] %s (%s) - %s from %s",
+            date("%Y-%m-%d %H:%M", timestamp), kind, name, reason or "", tostring(amount or ""), officer or "Unknown")
     end
 end
 
@@ -177,7 +212,7 @@ function mod:UndoLastAction()
     elseif kind == "BI" then
         EPGP:BankItem(L["Undo"] .. " " .. reason, true)
     else
-        assert(false, "Unknown record in the log")
+        EPGP:Print("Cannot undo unknown record type: " .. tostring(kind))
     end
 
     callbacks:Fire("LogChanged", #self.db.profile.log)
@@ -208,7 +243,7 @@ function mod:RedoLastUndo()
         table.insert(self.db.profile.log, record)
         exists_logs[string.format(LOG_FORMAT_NEW, unpack(record))] = true
     else
-        assert(false, "Unknown record in the log")
+        EPGP:Print("Cannot redo unknown record type: " .. tostring(kind))
     end
 
     callbacks:Fire("LogChanged", #self.db.profile.log)
@@ -436,11 +471,18 @@ function mod:EPGP_SYNC_LOG(tag, msg, channel, sender)
         return self:EPGP_SYNC_RESPONSE(tag, msg, channel, sender)
     end
 
-    if exists_logs[msg] then
+    local entry = ParseLogMessage(msg)
+    if not entry then
+        return
+    end
+    entry[6] = entry[6] or "Unknown"
+
+    local key = string.format(LOG_FORMAT_NEW, unpack(entry))
+    if exists_logs[key] then
         return
     end
 
-    local members_with_logs = sync_logs[msg] or {}
+    local members_with_logs = sync_logs[key] or {}
     local member_exists = false
     for _, member in pairs(members_with_logs) do
         if member == sender then
@@ -450,25 +492,16 @@ function mod:EPGP_SYNC_LOG(tag, msg, channel, sender)
     if not member_exists then
         table.insert(members_with_logs, sender)
     end
-    sync_logs[msg] = members_with_logs
+    sync_logs[key] = members_with_logs
 
     if #members_with_logs == 2 then
-        local timestamp, kind, name, reason, amount, officer = deformat(msg, LOG_FORMAT_NEW)
-        if not timestamp then
-            timestamp, kind, name, reason, amount = deformat(msg, LOG_FORMAT)
-            officer = "Unknown"
-        end
+        table.insert(mod.db.profile.log, entry)
+        exists_logs[key] = true
 
-        if timestamp then
-            local entry = { tonumber(timestamp), kind, name, reason, tonumber(amount), officer }
-            table.insert(mod.db.profile.log, entry)
-            exists_logs[msg] = true
-
-            if CheckFilter(entry, mod.db.profile.filter) then
-                table.insert(mod.db.profile.filtred_logs, entry)
-            end
-            callbacks:Fire("LogChanged", #self.db.profile.log)
+        if CheckFilter(entry, mod.db.profile.filter) then
+            table.insert(mod.db.profile.filtred_logs, entry)
         end
+        callbacks:Fire("LogChanged", #self.db.profile.log)
     end
 
     if #members_with_logs >= 2 then
@@ -546,6 +579,7 @@ function mod:OnEnable()
     log("Запросили логи начиная с", tostring(latest_time))
 
     for _, log in pairs(logs) do
+        NormalizeRecord(log)
         log[6] = log[6] or "Unknown"
         exists_logs[string.format(LOG_FORMAT_NEW, unpack(log))] = true
     end

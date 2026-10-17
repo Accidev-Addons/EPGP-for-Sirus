@@ -87,6 +87,7 @@ L["Reset EPGP"] = true
 L["Reset all main toons' EP and GP to 0?"] = true
 L["Resets EP and GP of all members of the guild. This will set all main toons' EP and GP to 0. Use with care!"] = true
 L["Resume recurring award (%s) %d EP/%s"] = true
+L["Search"] = true
 L["Sets loot tracking threshold, to disable the popup on loot below this threshold quality."] = true
 L["Sets the announce medium EPGP will use to announce EPGP actions."] = true
 L["Sets the custom announce channel name used to announce EPGP actions."] = true

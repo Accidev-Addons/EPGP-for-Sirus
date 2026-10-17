@@ -1566,8 +1566,9 @@ local function CreateEPGPFrameStandings()
 
     -- Make the table frame
     local tabl = CreateFrame("Frame", nil, main)
-    tabl:SetPoint("TOPLEFT")
-    tabl:SetPoint("TOPRIGHT")
+    local searchOffset = select(2, GameFontNormalSmall:GetFont()) + 4
+    tabl:SetPoint("TOPLEFT", 0, -searchOffset)
+    tabl:SetPoint("TOPRIGHT", 0, -searchOffset)
     tabl:SetPoint("BOTTOM", modeText, "TOP")
     -- Also hook the status texts to update on show
     tabl:SetScript(
@@ -1650,19 +1651,66 @@ local function CreateEPGPFrameStandings()
     tabl.headers[4]:SetScript(
         "OnClick", function(self) EPGP:StandingsSort("PR") end)
 
+    local nameFilter = ""
+    local shown = {}
+
+    local function Lower(s)
+        s = s:gsub("\208([\144-\159])", function(c) return "\208" .. string.char(c:byte() + 32) end)
+        s = s:gsub("\208([\160-\175])", function(c) return "\209" .. string.char(c:byte() - 32) end)
+        s = s:gsub("\208\129", "\209\145")
+        return (s:gsub("[A-Z]", function(c) return string.char(c:byte() + 32) end))
+    end
+
+    local search = CreateFrame("EditBox", "EPGPStandingsSearch", tabl, "InputBoxTemplate")
+    search:SetPoint("BOTTOMLEFT", tabl, "TOPLEFT", 4, 1)
+    search:SetWidth(150)
+    search:SetHeight(fontHeight + 4)
+    search:SetAutoFocus(false)
+    search:SetMaxLetters(24)
+
+    local searchHint = search:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    searchHint:SetPoint("LEFT", search, "LEFT", 0, 0)
+    searchHint:SetText(L["Search"])
+    search.hint = searchHint
+
+    search:HookScript("OnEditFocusGained", function() searchHint:Hide() end)
+    search:HookScript("OnEditFocusLost", function(self)
+        if self:GetText() == "" then searchHint:Show() end
+    end)
+    search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    search:SetScript("OnEscapePressed", function(self)
+        self:SetText("")
+        self:ClearFocus()
+    end)
+    search:SetScript("OnTextChanged", function(self)
+        local text = self:GetText()
+        nameFilter = Lower(text)
+        if text ~= "" then searchHint:Hide() end
+        if EPGPScrollFrameScrollBar then EPGPScrollFrameScrollBar:SetValue(0) end
+        rowFrame.needUpdate = true
+    end)
+
     -- Install the update function on rowFrame.
     local function UpdateStandings()
         if not rowFrame.needUpdate then return end
 
+        wipe(shown)
+        for j = 1, EPGP:GetNumMembers() do
+            local name = EPGP:GetMember(j)
+            if nameFilter == "" or string.find(Lower(name), nameFilter, 1, true) then
+                shown[#shown + 1] = name
+            end
+        end
+
         local offset = FauxScrollFrame_GetOffset(EPGPScrollFrame)
-        local numMembers = EPGP:GetNumMembers()
+        local numMembers = #shown
         local numDisplayedMembers = math.min(#rowFrame.rows, numMembers - offset)
         local minEP = EPGP:GetMinEP()
         for i = 1, #rowFrame.rows do
             local row = rowFrame.rows[i]
             local j = i + offset
             if j <= numMembers then
-                row.name = EPGP:GetMember(j)
+                row.name = shown[j]
                 row.cells[1]:SetText(row.name)
                 local c = RAID_CLASS_COLORS[EPGP:GetClass(row.name)]
                 row.cells[1]:SetTextColor(c.r, c.g, c.b)
